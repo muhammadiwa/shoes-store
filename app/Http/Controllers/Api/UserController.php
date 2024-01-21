@@ -2,19 +2,24 @@
 
 namespace App\Http\Controllers\Api;
 
+use Exception;
+use Rules\Password;
+use App\Models\User;
+use Illuminate\Http\Request;
+use Illuminate\Http\JsonResponse;
+use App\Helpers\ResponseFormatter;
 use App\Http\Controllers\Controller;
-use App\Http\Requests\Api\User\DestroyManyRequest;
+use App\Http\Resources\UserResource;
+use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Facades\Hash;
+use Illuminate\Support\Facades\Redis;
+use Spatie\QueryBuilder\QueryBuilder;
+use App\Http\Resources\UserCollection;
+use Symfony\Component\HttpFoundation\Response;
 use App\Http\Requests\Api\User\StoreUserRequest;
 use App\Http\Requests\Api\User\UpdateUserRequest;
-use App\Http\Resources\UserCollection;
-use App\Http\Resources\UserResource;
-use App\Models\User;
-use Exception;
-use Illuminate\Http\JsonResponse;
-use Illuminate\Http\Request;
+use App\Http\Requests\Api\User\DestroyManyRequest;
 use Illuminate\Http\Resources\Json\AnonymousResourceCollection;
-use Spatie\QueryBuilder\QueryBuilder;
-use Symfony\Component\HttpFoundation\Response;
 
 class UserController extends Controller
 {
@@ -63,7 +68,7 @@ class UserController extends Controller
      */
     public function store(StoreUserRequest $request)
     {
-        $user = User::create($request->safe(['name', 'email'])
+        $user = User::create($request->safe(['name', 'username', 'email'])
             + [
                 'password' => bcrypt($request->validated(['password'])),
                 'email_verified_at' => now(),
@@ -95,7 +100,7 @@ class UserController extends Controller
      */
     public function update(UpdateUserRequest $request, User $user)
     {
-        $user->update($request->safe(['name', 'email'])
+        $user->update($request->safe(['name', 'username', 'email'])
             + ['password' => bcrypt($request->validated(['password']))]);
 
         $user->syncRoles($request->validated(['role']));
@@ -127,4 +132,103 @@ class UserController extends Controller
 
         return $this->responseWithSuccess('Users deleted successful!');
     }
+
+    public function register()
+    {
+        try {
+            $request->validate([
+                'name' => 'required|string|max:255',
+                'username' => 'required|string|max:255',
+                'email' => 'required|string|email|max:255|unique:users',
+                'phone' => 'nullable|string|max:255',
+                'password' => ['required', 'confirmed', new Password],
+            ]);
+
+            $user = User::create([
+                'name' => $request->name,
+                'username' => $request->username,
+                'email' => $request->email,
+                'phone' => $request->phone,
+                'password' => Hash::make($request->password),
+            ]);
+
+            $user = User::where('email', $request->email)->first();
+
+            $tokenResult = $user->createToken('authToken')->plainTextToken;
+
+            return ResponseFormatter::success([
+                'access_token' => $tokenResult,
+                'token_type' => 'Bearer',
+                'user' => $user
+            ], 'User Registered');
+        } catch (Exception $error) {
+            return ResponseFormatter::error([
+                'message' => 'Something went wrong',
+                'error' => $error
+            ], 'Authentication Failed', 500);
+        }
+    }
+
+    public function login(Request $request)
+    {
+        try {
+            $request->validate([
+                'email' => 'email|required',
+                'password' => 'required'
+            ]);
+
+            $credentials = request(['email', 'password']);
+
+            if (!Auth::attempt($credentials)) {
+                return ResponseFormatter::error([
+                    'message' => 'Unauthorized'
+
+                ], 'Authentication Failed', 500);
+            }
+            
+            $user = User::where('email', $request->email)->first();
+
+            if (!Hash::check($request->password, $user->password, [])) {
+                throw new \Exception('Invalid Credentials');
+            }
+
+            $tokenResult = $user->createToken('authToken')->plainTextToken;
+
+            return ResponseFormatter::success([
+                'access_token' => $tokenResult,
+                'token_type' => 'Bearer',
+                'user' => $user
+            ], 'Authenticated');
+        }catch (Exception $error) {
+            return ResponseFormatter::error([
+                'message' => 'Something went wrong',
+                'error' => $error
+            ], 'Authentication Failed', 500);
+        } 
+    }
+
+    public function fetch(Request $request)
+    {
+        $user = $request->user();
+
+        return ResponseFormatter::success($user, 'Data profile user successfully');
+    }
+
+    public function updateProfile(Request $request)
+    {
+        $data = $request->all();
+
+        $user = Auth::user();
+        $user->update($data);
+
+        return ResponseFormatter::success($user, 'Profile updated successfully');
+    }
+
+    public function logout(Request $request)
+    {
+        $token = $request->user()->currentAccessToken()->delete();
+
+        return ResponseFormatter::success($token, 'Token revoked');
+    }
+
 }

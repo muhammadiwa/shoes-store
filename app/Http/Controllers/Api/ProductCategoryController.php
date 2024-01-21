@@ -31,4 +31,20 @@ class ProductCategoryController extends Controller
                 );
             }
         }
+
+        $category = ProductCategory::query();
+        if ($name) {
+            $category->where('name', 'like', '%' . $name . '%');
+        }
+
+        if ($show_product) {
+            $category->with('products');
+        }
+
+        return ResponseFormatter::success(
+            $category->paginate($limit),
+            'Data list kategori berhasil diambil'
+        );
+    }
+
 }
